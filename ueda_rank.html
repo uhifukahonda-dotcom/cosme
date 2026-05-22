@@ -544,6 +544,31 @@ details summary{cursor:pointer;font-size:15px;color:#888;padding:6px 0;user-sele
     </div>
   </div>
 
+  <!-- GitHub Sync -->
+  <div class="staff-section">
+    <div class="staff-section-title">☁️ GitHub自動同期設定</div>
+    <p style="color:#666;font-size:14px;line-height:1.7;margin-bottom:8px">設定すると、CSVアップロード時に自動でGitHubに保存され、<strong>他のスマホ・タブレット・PCでも同じデータ</strong>が使えるようになります。</p>
+    <input type="password" class="staff-input" id="inp-gh-token" placeholder="GitHubアクセストークン（ghp_...）" autocomplete="off">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn-primary" style="flex:1;min-width:140px" onclick="saveGhTokenUI()">トークンを保存</button>
+      <button class="btn-primary" style="flex:1;min-width:140px;background:#4a7c6a" id="btn-manual-sync" onclick="manualSyncUI()">今すぐ同期する</button>
+    </div>
+    <div class="status-msg" id="gh-sync-status"></div>
+    <details style="margin-top:4px">
+      <summary style="cursor:pointer;color:#2d5f3f;font-size:14px;font-weight:600">📋 トークンの取得方法（タップで確認）</summary>
+      <div class="sample-pre" style="font-size:13px;line-height:1.8">① GitHub.com にログイン
+② 右上のアイコン → Settings
+③ 左メニュー一番下「Developer settings」
+④「Personal access tokens」→「Tokens (classic)」
+⑤「Generate new token (classic)」をクリック
+⑥ Note: ueda-rank（任意の名前）
+⑦ Expiration:「No expiration」を選択
+⑧「repo」にチェック ✓
+⑨「Generate token」をクリック
+⑩ 表示された ghp_... をコピーしてここに貼り付け</div>
+    </details>
+  </div>
+
   <!-- Password -->
   <div class="staff-section">
     <div class="staff-section-title">🔑 パスワード設定</div>
@@ -577,6 +602,10 @@ const RANK_ORDER = ['silver','gold','platinum','diamond'];
 const KEY_DATA     = 'ueda_patient_data';
 const KEY_PW       = 'ueda_staff_pw';
 const KEY_PREV     = 'ueda_prev_ranks';
+const KEY_GH_TOKEN = 'ueda_gh_token';
+const GH_OWNER     = 'uhifukahonda-dotcom';
+const GH_REPO      = 'cosme';
+const GH_FILE      = 'data.json';
 
 // ━━━ Helpers ━━━
 function getRankKey(amount){
@@ -589,6 +618,71 @@ function yen(n){ return '¥'+Number(n).toLocaleString('ja-JP') }
 function loadData(){ try{const r=localStorage.getItem(KEY_DATA);return r?JSON.parse(r):null}catch(e){return null} }
 function loadPrev(){ try{const r=localStorage.getItem(KEY_PREV);return r?JSON.parse(r):{}}catch(e){return{}} }
 function getPw(){ return localStorage.getItem(KEY_PW)||'1234' }
+function getGhToken(){ return localStorage.getItem(KEY_GH_TOKEN)||'' }
+
+// ━━━ GitHub Sync ━━━
+async function fetchFromGitHub(){
+  const url=`https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/main/${GH_FILE}?t=${Date.now()}`;
+  try{
+    const res=await fetch(url);
+    if(res.ok){
+      const data=await res.json();
+      try{ localStorage.setItem(KEY_DATA, JSON.stringify(data)); }catch(e){}
+      return data;
+    }
+  }catch(e){}
+  return null;
+}
+
+async function pushToGitHub(data){
+  const token=getGhToken();
+  if(!token) return {ok:false, reason:'notoken'};
+  const apiUrl=`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_FILE}`;
+  let sha=null;
+  try{
+    const r=await fetch(apiUrl,{headers:{'Authorization':'token '+token,'Accept':'application/vnd.github.v3+json'}});
+    if(r.ok){ const info=await r.json(); sha=info.sha; }
+  }catch(e){}
+  const content=btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+  const body={message:'Update patient data',content,...(sha?{sha}:{})};
+  try{
+    const r=await fetch(apiUrl,{
+      method:'PUT',
+      headers:{'Authorization':'token '+token,'Content-Type':'application/json','Accept':'application/vnd.github.v3+json'},
+      body:JSON.stringify(body)
+    });
+    if(r.ok) return {ok:true};
+    const errBody=await r.json().catch(()=>({}));
+    return {ok:false, reason: errBody.message||r.status};
+  }catch(e){ return {ok:false, reason:e.message}; }
+}
+
+function saveGhTokenUI(){
+  const val=document.getElementById('inp-gh-token').value.trim();
+  if(!val){ statusMsg('gh-sync-status','トークンを入力してください。','err'); return; }
+  if(!val.startsWith('ghp_')&&!val.startsWith('github_pat_')){
+    statusMsg('gh-sync-status','正しいトークン形式ではありません（ghp_ で始まるもの）。','err'); return;
+  }
+  localStorage.setItem(KEY_GH_TOKEN, val);
+  document.getElementById('inp-gh-token').value='';
+  statusMsg('gh-sync-status','✓ トークンを保存しました。','ok');
+}
+
+async function manualSyncUI(){
+  const btn=document.getElementById('btn-manual-sync');
+  const data=loadData();
+  if(!data){ statusMsg('gh-sync-status','アップロードするデータがありません。','err'); return; }
+  if(!getGhToken()){ statusMsg('gh-sync-status','先にトークンを保存してください。','err'); return; }
+  btn.disabled=true; btn.textContent='同期中...';
+  statusMsg('gh-sync-status','GitHubに送信中...','info');
+  const result=await pushToGitHub(data);
+  btn.disabled=false; btn.textContent='今すぐ同期する';
+  if(result.ok){
+    statusMsg('gh-sync-status','✓ 同期完了！他のデバイスでもデータが使えます。','ok');
+  } else {
+    statusMsg('gh-sync-status','同期エラー：'+result.reason,'err');
+  }
+}
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -863,6 +957,17 @@ function onFileUpload(e){
       const count=Object.keys(data).length;
       statusMsg('upload-status','✓ アップロード完了：'+count+'名の患者データを登録しました。','ok');
       updateDataStats();
+      // GitHubトークンが設定されていれば自動同期
+      if(getGhToken()){
+        statusMsg('upload-status','✓ アップロード完了：'+count+'名を登録。GitHubに同期中...','ok');
+        pushToGitHub(data).then(result=>{
+          if(result.ok){
+            statusMsg('upload-status','✓ アップロード＆GitHub同期完了：'+count+'名。他のデバイスでも使えます。','ok');
+          } else {
+            statusMsg('upload-status','✓ アップロード完了（GitHub同期エラー：'+result.reason+'）','info');
+          }
+        });
+      }
     }catch(err){
       statusMsg('upload-status','CSVの読み込みに失敗しました：'+err.message,'err');
     }
@@ -991,7 +1096,16 @@ function resetData(){
 document.getElementById('inp-id').addEventListener('keydown', e=>{
   if(e.key==='Enter') doSearch();
 });
-window.addEventListener('load', goSearch);
+window.addEventListener('load', async ()=>{
+  goSearch();
+  // GitHubからデータを自動取得（バックグラウンドで実行）
+  const ghData = await fetchFromGitHub();
+  if(ghData){
+    // スタッフ画面が開いていれば統計を更新
+    const staffScr=document.getElementById('scr-staff');
+    if(staffScr.classList.contains('active')) updateDataStats();
+  }
+});
 </script>
 </body>
 </html>

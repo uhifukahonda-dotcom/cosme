@@ -546,27 +546,27 @@ details summary{cursor:pointer;font-size:15px;color:#888;padding:6px 0;user-sele
 
   <!-- GitHub Sync -->
   <div class="staff-section">
-    <div class="staff-section-title">☁️ GitHub自動同期設定</div>
-    <p style="color:#666;font-size:14px;line-height:1.7;margin-bottom:8px">設定すると、CSVアップロード時に自動でGitHubに保存され、<strong>他のスマホ・タブレット・PCでも同じデータ</strong>が使えるようになります。</p>
-    <input type="text" class="staff-input" id="inp-gh-repo" placeholder="リポジトリ名（例：cosme）" autocomplete="off">
-    <input type="password" class="staff-input" id="inp-gh-token" placeholder="GitHubアクセストークン（ghp_...）" autocomplete="off">
+    <div class="staff-section-title">☁️ 自動同期設定</div>
+    <p style="color:#666;font-size:14px;line-height:1.7;margin-bottom:10px">トークンを設定すると、<strong>CSVアップロード時に自動でGitHubに保存</strong>され、他のデバイスでも同じデータが使えます。</p>
+    <div id="gh-token-status-bar" style="display:none;padding:10px 14px;border-radius:10px;font-size:14px;margin-bottom:10px"></div>
+    <input type="password" class="staff-input" id="inp-gh-token" placeholder="GitHubアクセストークン（ghp_...）" autocomplete="new-password">
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <button class="btn-primary" style="flex:1;min-width:140px" onclick="saveGhTokenUI()">トークンを保存</button>
-      <button class="btn-primary" style="flex:1;min-width:140px;background:#4a7c6a" id="btn-manual-sync" onclick="manualSyncUI()">今すぐ同期する</button>
+      <button class="btn-primary" style="flex:1;min-width:120px" onclick="saveAndTestToken()">保存＆接続テスト</button>
+      <button class="btn-primary" style="flex:1;min-width:120px;background:#4a7c6a" onclick="manualSyncNow()">今すぐ同期</button>
     </div>
     <div class="status-msg" id="gh-sync-status"></div>
-    <details style="margin-top:4px">
+    <details style="margin-top:8px">
       <summary style="cursor:pointer;color:#2d5f3f;font-size:14px;font-weight:600">📋 トークンの取得方法（タップで確認）</summary>
-      <div class="sample-pre" style="font-size:13px;line-height:1.8">① GitHub.com にログイン
-② 右上のアイコン → Settings
-③ 左メニュー一番下「Developer settings」
-④「Personal access tokens」→「Tokens (classic)」
-⑤「Generate new token (classic)」をクリック
-⑥ Note: ueda-rank（任意の名前）
-⑦ Expiration:「No expiration」を選択
-⑧「repo」にチェック ✓
-⑨「Generate token」をクリック
-⑩ 表示された ghp_... をコピーしてここに貼り付け</div>
+      <div class="sample-pre" style="font-size:13px;line-height:1.9">① GitHub.com の右上アイコン →「Settings」
+② 左メニュー一番下「開発者向け設定」
+③「個人アクセストークン」→「トークン（クラシック）」
+④「新しいトークンを生成」→「新しいトークンを生成（クラシック）」
+⑤ 注記：ueda-rank（任意）
+⑥ 有効期限：「有効期限なし」
+⑦「リポジトリ」にチェック ✓
+⑧「トークンを生成する」をクリック
+⑨ 表示された ghp_... をコピーしてここに貼り付け
+⑩「保存＆接続テスト」をクリック → 緑になればOK！</div>
     </details>
   </div>
 
@@ -624,9 +624,9 @@ function getGhToken(){ return localStorage.getItem(KEY_GH_TOKEN)||'' }
 
 // ━━━ GitHub Sync ━━━
 async function fetchFromGitHub(){
-  const url=`https://raw.githubusercontent.com/${GH_OWNER}/${encodeURIComponent(getGhRepo())}/main/${GH_FILE}?t=${Date.now()}`;
+  const rawUrl=`https://raw.githubusercontent.com/${GH_OWNER}/cosme/main/${GH_FILE}?t=${Date.now()}`;
   try{
-    const res=await fetch(url);
+    const res=await fetch(rawUrl);
     if(res.ok){
       const data=await res.json();
       try{ localStorage.setItem(KEY_DATA, JSON.stringify(data)); }catch(e){}
@@ -638,57 +638,85 @@ async function fetchFromGitHub(){
 
 async function pushToGitHub(data){
   const token=getGhToken();
-  if(!token) return {ok:false, reason:'notoken'};
-  const apiUrl=`https://api.github.com/repos/${GH_OWNER}/${encodeURIComponent(getGhRepo())}/contents/${GH_FILE}`;
+  if(!token) return {ok:false, reason:'トークン未設定'};
+  const apiUrl=`https://api.github.com/repos/${GH_OWNER}/cosme/contents/${GH_FILE}`;
   let sha=null;
   try{
-    const r=await fetch(apiUrl,{headers:{'Authorization':'token '+token,'Accept':'application/vnd.github.v3+json'}});
+    const r=await fetch(apiUrl,{headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}});
     if(r.ok){ const info=await r.json(); sha=info.sha; }
   }catch(e){}
-  const content=btoa(unescape(encodeURIComponent(JSON.stringify(data))));
-  const body={message:'Update patient data',content,...(sha?{sha}:{})};
+  const content=btoa(unescape(encodeURIComponent(JSON.stringify(data,null,2))));
+  const body={message:'Update patient data '+new Date().toISOString().slice(0,10),content,...(sha?{sha}:{})};
   try{
     const r=await fetch(apiUrl,{
       method:'PUT',
-      headers:{'Authorization':'token '+token,'Content-Type':'application/json','Accept':'application/vnd.github.v3+json'},
+      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},
       body:JSON.stringify(body)
     });
     if(r.ok) return {ok:true};
-    const errBody=await r.json().catch(()=>({}));
-    return {ok:false, reason: errBody.message||r.status};
-  }catch(e){ return {ok:false, reason:e.message}; }
+    const eb=await r.json().catch(()=>({}));
+    if(r.status===401) return {ok:false,reason:'トークンが無効です。新しいトークンを設定してください。'};
+    if(r.status===403) return {ok:false,reason:'アクセス権限がありません。トークンに repo 権限があるか確認してください。'};
+    if(r.status===404) return {ok:false,reason:'リポジトリが見つかりません。リポジトリ名を確認してください。'};
+    return {ok:false,reason:(eb.message||r.status)};
+  }catch(e){ return {ok:false,reason:e.message}; }
 }
 
-function saveGhTokenUI(){
-  const repo=document.getElementById('inp-gh-repo').value.trim();
+async function saveAndTestToken(){
   const val=document.getElementById('inp-gh-token').value.trim();
-  if(repo) localStorage.setItem(KEY_GH_REPO, repo);
-  if(!val && !repo){ statusMsg('gh-sync-status','リポジトリ名またはトークンを入力してください。','err'); return; }
-  if(val){
-    if(!val.startsWith('ghp_')&&!val.startsWith('github_pat_')){
-      statusMsg('gh-sync-status','正しいトークン形式ではありません（ghp_ で始まるもの）。','err'); return;
+  if(!val){ statusMsg('gh-sync-status','トークンを入力してください。','err'); return; }
+  localStorage.setItem(KEY_GH_TOKEN, val);
+  document.getElementById('inp-gh-token').value='';
+  statusMsg('gh-sync-status','接続テスト中...','info');
+  // テスト：リポジトリ情報を取得してみる
+  try{
+    const r=await fetch(`https://api.github.com/repos/${GH_OWNER}/cosme`,{
+      headers:{'Authorization':'Bearer '+val,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+    });
+    const bar=document.getElementById('gh-token-status-bar');
+    bar.style.display='block';
+    if(r.ok){
+      bar.style.background='#d4edda'; bar.style.color='#155724';
+      bar.textContent='✓ 接続成功！CSVアップロード時に自動でGitHubに同期されます。';
+      statusMsg('gh-sync-status','✓ トークン保存＆接続テスト成功！','ok');
+    } else if(r.status===401){
+      bar.style.background='#f8d7da'; bar.style.color='#721c24';
+      bar.textContent='✗ トークンが無効です。新しいトークンを作成してください。';
+      statusMsg('gh-sync-status','接続失敗：トークンが無効（401）','err');
+    } else if(r.status===404){
+      bar.style.background='#fff3cd'; bar.style.color='#856404';
+      bar.textContent='✗ リポジトリが見つかりません（404）。GitHubのリポジトリ名を確認してください。';
+      statusMsg('gh-sync-status','接続失敗：リポジトリが見つかりません（404）','err');
+    } else {
+      bar.style.background='#f8d7da'; bar.style.color='#721c24';
+      bar.textContent='✗ エラー：'+r.status;
+      statusMsg('gh-sync-status','接続失敗：'+r.status,'err');
     }
-    localStorage.setItem(KEY_GH_TOKEN, val);
-    document.getElementById('inp-gh-token').value='';
+  }catch(e){
+    statusMsg('gh-sync-status','接続エラー：'+e.message,'err');
   }
-  const savedRepo=getGhRepo();
-  statusMsg('gh-sync-status','✓ 保存しました（リポジトリ：'+savedRepo+'）','ok');
 }
 
-async function manualSyncUI(){
-  const btn=document.getElementById('btn-manual-sync');
+async function manualSyncNow(){
   const data=loadData();
-  if(!data){ statusMsg('gh-sync-status','アップロードするデータがありません。','err'); return; }
+  if(!data){ statusMsg('gh-sync-status','データがありません。先にCSVをアップロードしてください。','err'); return; }
   if(!getGhToken()){ statusMsg('gh-sync-status','先にトークンを保存してください。','err'); return; }
-  btn.disabled=true; btn.textContent='同期中...';
-  statusMsg('gh-sync-status','GitHubに送信中...','info');
+  statusMsg('gh-sync-status','GitHubに同期中...','info');
   const result=await pushToGitHub(data);
-  btn.disabled=false; btn.textContent='今すぐ同期する';
   if(result.ok){
-    statusMsg('gh-sync-status','✓ 同期完了！他のデバイスでもデータが使えます。','ok');
+    statusMsg('gh-sync-status','✓ 同期完了！他のデバイスでも最新データが使えます。','ok');
   } else {
     statusMsg('gh-sync-status','同期エラー：'+result.reason,'err');
   }
+}
+
+function downloadDataJson(){
+  const data=loadData();
+  if(!data){ statusMsg('gh-sync-status','データがありません。','err'); return; }
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='data.json'; a.click();
+  URL.revokeObjectURL(url);
 }
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
@@ -962,18 +990,18 @@ function onFileUpload(e){
         statusMsg('upload-status','ストレージ容量が不足しています。データをリセットしてから再試行してください。','err'); return;
       }
       const count=Object.keys(data).length;
-      statusMsg('upload-status','✓ アップロード完了：'+count+'名の患者データを登録しました。','ok');
       updateDataStats();
-      // GitHubトークンが設定されていれば自動同期
       if(getGhToken()){
-        statusMsg('upload-status','✓ アップロード完了：'+count+'名を登録。GitHubに同期中...','ok');
+        statusMsg('upload-status','✓ '+count+'名を登録。GitHubに同期中...','ok');
         pushToGitHub(data).then(result=>{
           if(result.ok){
-            statusMsg('upload-status','✓ アップロード＆GitHub同期完了：'+count+'名。他のデバイスでも使えます。','ok');
+            statusMsg('upload-status','✓ アップロード＆GitHub同期完了！'+count+'名。他のデバイスでも使えます。','ok');
           } else {
-            statusMsg('upload-status','✓ アップロード完了（GitHub同期エラー：'+result.reason+'）','info');
+            statusMsg('upload-status','✓ ローカル保存完了（GitHub同期エラー：'+result.reason+'）','info');
           }
         });
+      } else {
+        statusMsg('upload-status','✓ アップロード完了：'+count+'名を登録しました。','ok');
       }
     }catch(err){
       statusMsg('upload-status','CSVの読み込みに失敗しました：'+err.message,'err');

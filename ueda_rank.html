@@ -549,6 +549,7 @@ details summary{cursor:pointer;font-size:15px;color:#888;padding:6px 0;user-sele
     <div class="staff-section-title">☁️ 自動同期設定</div>
     <p style="color:#666;font-size:14px;line-height:1.7;margin-bottom:10px">トークンを設定すると、<strong>CSVアップロード時に自動でGitHubに保存</strong>され、他のデバイスでも同じデータが使えます。</p>
     <div id="gh-token-status-bar" style="display:none;padding:10px 14px;border-radius:10px;font-size:14px;margin-bottom:10px"></div>
+    <input type="text" class="staff-input" id="inp-gh-repo" placeholder="リポジトリ名（空欄の場合 cosme を使用）" autocomplete="off">
     <input type="password" class="staff-input" id="inp-gh-token" placeholder="GitHubアクセストークン（ghp_...）" autocomplete="new-password">
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn-primary" style="flex:1;min-width:120px" onclick="saveAndTestToken()">保存＆接続テスト</button>
@@ -639,33 +640,50 @@ async function fetchFromGitHub(){
 async function pushToGitHub(data){
   const token=getGhToken();
   if(!token) return {ok:false, reason:'トークン未設定'};
-  const apiUrl=`https://api.github.com/repos/${GH_OWNER}/cosme/contents/${GH_FILE}`;
-  let sha=null;
-  try{
-    const r=await fetch(apiUrl,{headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}});
-    if(r.ok){ const info=await r.json(); sha=info.sha; }
-  }catch(e){}
-  const content=btoa(unescape(encodeURIComponent(JSON.stringify(data,null,2))));
-  const body={message:'Update patient data '+new Date().toISOString().slice(0,10),content,...(sha?{sha}:{})};
-  try{
-    const r=await fetch(apiUrl,{
-      method:'PUT',
-      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},
-      body:JSON.stringify(body)
-    });
-    if(r.ok) return {ok:true};
-    const eb=await r.json().catch(()=>({}));
-    if(r.status===401) return {ok:false,reason:'トークンが無効です。新しいトークンを設定してください。'};
-    if(r.status===403) return {ok:false,reason:'アクセス権限がありません。トークンに repo 権限があるか確認してください。'};
-    if(r.status===404) return {ok:false,reason:'リポジトリが見つかりません。リポジトリ名を確認してください。'};
-    return {ok:false,reason:(eb.message||r.status)};
-  }catch(e){ return {ok:false,reason:e.message}; }
+  const hdrs={'Authorization':'token '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
+  // データサイズチェック
+  const jsonStr=JSON.stringify(data);
+  const sizeKB=Math.round(new Blob([jsonStr]).size/1024);
+  if(sizeKB>900) return {ok:false,reason:`データが大きすぎます（${sizeKB}KB）。上限は約900KBです。`};
+  let content;
+  try{ content=btoa(unescape(encodeURIComponent(jsonStr))); }
+  catch(e){ return {ok:false,reason:'エンコードエラー：'+e.message}; }
+  // リポジトリ名を複数試みる（"cosme" と "コスメ" 両方）
+  const savedRepo=localStorage.getItem(KEY_GH_REPO)||'';
+  const repoNames=savedRepo?[savedRepo]:['cosme', encodeURIComponent('コスメ'), '%E3%82%B3%E3%82%B9%E3%83%A1'];
+  for(const repoName of repoNames){
+    const apiUrl=`https://api.github.com/repos/${GH_OWNER}/${repoName}/contents/${GH_FILE}`;
+    let sha=null;
+    try{
+      const r=await fetch(apiUrl,{headers:hdrs});
+      if(r.ok){ const info=await r.json(); sha=info.sha; }
+    }catch(e){}
+    const body={message:'Update patient data '+new Date().toISOString().slice(0,10),content,...(sha?{sha}:{})};
+    try{
+      const r=await fetch(apiUrl,{
+        method:'PUT',
+        headers:{...hdrs,'Content-Type':'application/json'},
+        body:JSON.stringify(body)
+      });
+      if(r.ok) return {ok:true};
+      const eb=await r.json().catch(()=>({}));
+      const ghMsg=eb.message||'';
+      if(r.status===401) return {ok:false,reason:'トークンが無効です（401）'};
+      if(r.status===403) return {ok:false,reason:'権限エラー（403）：'+ghMsg};
+      if(r.status===422) return {ok:false,reason:'422エラー：'+ghMsg+'（データ：'+sizeKB+'KB）'};
+      // 404の場合は次のリポジトリ名を試みる
+      if(r.status!==404) return {ok:false,reason:r.status+'：'+ghMsg};
+    }catch(e){ return {ok:false,reason:e.message}; }
+  }
+  return {ok:false,reason:'リポジトリへの書き込みができません。GitHubのリポジトリ名を設定欄で変更してください。（データ：'+sizeKB+'KB）'};
 }
 
 async function saveAndTestToken(){
+  const repoVal=document.getElementById('inp-gh-repo').value.trim();
+  if(repoVal) localStorage.setItem(KEY_GH_REPO, repoVal);
   const val=document.getElementById('inp-gh-token').value.trim();
-  if(!val){ statusMsg('gh-sync-status','トークンを入力してください。','err'); return; }
-  localStorage.setItem(KEY_GH_TOKEN, val);
+  if(!val && !repoVal){ statusMsg('gh-sync-status','トークンを入力してください。','err'); return; }
+  if(val) localStorage.setItem(KEY_GH_TOKEN, val);
   document.getElementById('inp-gh-token').value='';
   const bar=document.getElementById('gh-token-status-bar');
   bar.style.display='block';

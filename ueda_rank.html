@@ -667,33 +667,42 @@ async function saveAndTestToken(){
   if(!val){ statusMsg('gh-sync-status','トークンを入力してください。','err'); return; }
   localStorage.setItem(KEY_GH_TOKEN, val);
   document.getElementById('inp-gh-token').value='';
-  statusMsg('gh-sync-status','接続テスト中...','info');
-  // テスト：リポジトリ情報を取得してみる
+  const bar=document.getElementById('gh-token-status-bar');
+  bar.style.display='block';
+  bar.style.background='#e8f4fd'; bar.style.color='#333';
+  bar.textContent='接続テスト中...';
   try{
-    const r=await fetch(`https://api.github.com/repos/${GH_OWNER}/cosme`,{
-      headers:{'Authorization':'Bearer '+val,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
-    });
-    const bar=document.getElementById('gh-token-status-bar');
-    bar.style.display='block';
-    if(r.ok){
-      bar.style.background='#d4edda'; bar.style.color='#155724';
-      bar.textContent='✓ 接続成功！CSVアップロード時に自動でGitHubに同期されます。';
-      statusMsg('gh-sync-status','✓ トークン保存＆接続テスト成功！','ok');
-    } else if(r.status===401){
+    const hdrs={'Authorization':'Bearer '+val,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
+    // ① ユーザー情報を取得（トークンの有効性確認）
+    const userR=await fetch('https://api.github.com/user',{headers:hdrs});
+    if(!userR.ok){
       bar.style.background='#f8d7da'; bar.style.color='#721c24';
-      bar.textContent='✗ トークンが無効です。新しいトークンを作成してください。';
-      statusMsg('gh-sync-status','接続失敗：トークンが無効（401）','err');
-    } else if(r.status===404){
+      bar.textContent='✗ トークンが無効です（'+userR.status+'）。新しいトークンを作成してください。';
+      return;
+    }
+    const user=await userR.json();
+    const authUser=user.login;
+    // ② リポジトリの書き込み権限を確認
+    const repoR=await fetch(`https://api.github.com/repos/${GH_OWNER}/cosme`,{headers:hdrs});
+    if(!repoR.ok){
       bar.style.background='#fff3cd'; bar.style.color='#856404';
-      bar.textContent='✗ リポジトリが見つかりません（404）。GitHubのリポジトリ名を確認してください。';
-      statusMsg('gh-sync-status','接続失敗：リポジトリが見つかりません（404）','err');
+      bar.textContent='✗ リポジトリにアクセスできません（'+repoR.status+'）。ユーザー名：'+authUser;
+      return;
+    }
+    const repo=await repoR.json();
+    const canPush=repo.permissions&&repo.permissions.push;
+    if(canPush){
+      bar.style.background='#d4edda'; bar.style.color='#155724';
+      bar.textContent='✓ 接続成功！（ユーザー：'+authUser+'・書き込み権限あり）CSVアップロード時に自動同期されます。';
+      statusMsg('gh-sync-status','✓ テスト成功！','ok');
     } else {
-      bar.style.background='#f8d7da'; bar.style.color='#721c24';
-      bar.textContent='✗ エラー：'+r.status;
-      statusMsg('gh-sync-status','接続失敗：'+r.status,'err');
+      bar.style.background='#fff3cd'; bar.style.color='#856404';
+      bar.textContent='✗ 書き込み権限がありません。ログイン中のユーザー：'+authUser+'　リポジトリオーナー：'+GH_OWNER+'　→ リポジトリの「Settings→Collaborators」で '+authUser+' を追加してください。';
+      statusMsg('gh-sync-status','書き込み権限エラー','err');
     }
   }catch(e){
-    statusMsg('gh-sync-status','接続エラー：'+e.message,'err');
+    bar.style.background='#f8d7da'; bar.style.color='#721c24';
+    bar.textContent='✗ 接続エラー：'+e.message;
   }
 }
 

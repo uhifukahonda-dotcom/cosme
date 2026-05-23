@@ -640,42 +640,53 @@ async function fetchFromGitHub(){
 async function pushToGitHub(data){
   const token=getGhToken();
   if(!token) return {ok:false, reason:'トークン未設定'};
-  const hdrs={'Authorization':'token '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
-  // データサイズチェック
+  const savedRepo=localStorage.getItem(KEY_GH_REPO)||'cosme';
+  const hdrs={'Authorization':'token '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'};
+  const base=`https://api.github.com/repos/${GH_OWNER}/${savedRepo}`;
   const jsonStr=JSON.stringify(data);
   const sizeKB=Math.round(new Blob([jsonStr]).size/1024);
-  if(sizeKB>900) return {ok:false,reason:`データが大きすぎます（${sizeKB}KB）。上限は約900KBです。`};
-  let content;
-  try{ content=btoa(unescape(encodeURIComponent(jsonStr))); }
-  catch(e){ return {ok:false,reason:'エンコードエラー：'+e.message}; }
-  // リポジトリ名を複数試みる（"cosme" と "コスメ" 両方）
-  const savedRepo=localStorage.getItem(KEY_GH_REPO)||'';
-  const repoNames=savedRepo?[savedRepo]:['cosme', encodeURIComponent('コスメ'), '%E3%82%B3%E3%82%B9%E3%83%A1'];
-  for(const repoName of repoNames){
-    const apiUrl=`https://api.github.com/repos/${GH_OWNER}/${repoName}/contents/${GH_FILE}`;
-    let sha=null;
-    try{
-      const r=await fetch(apiUrl,{headers:hdrs});
-      if(r.ok){ const info=await r.json(); sha=info.sha; }
-    }catch(e){}
-    const body={message:'Update patient data '+new Date().toISOString().slice(0,10),content,...(sha?{sha}:{})};
-    try{
-      const r=await fetch(apiUrl,{
-        method:'PUT',
-        headers:{...hdrs,'Content-Type':'application/json'},
-        body:JSON.stringify(body)
-      });
-      if(r.ok) return {ok:true};
-      const eb=await r.json().catch(()=>({}));
-      const ghMsg=eb.message||'';
-      if(r.status===401) return {ok:false,reason:'トークンが無効です（401）'};
-      if(r.status===403) return {ok:false,reason:'権限エラー（403）：'+ghMsg};
-      if(r.status===422) return {ok:false,reason:'422エラー：'+ghMsg+'（データ：'+sizeKB+'KB）'};
-      // 404の場合は次のリポジトリ名を試みる
-      if(r.status!==404) return {ok:false,reason:r.status+'：'+ghMsg};
-    }catch(e){ return {ok:false,reason:e.message}; }
-  }
-  return {ok:false,reason:'リポジトリへの書き込みができません。GitHubのリポジトリ名を設定欄で変更してください。（データ：'+sizeKB+'KB）'};
+  try{
+    // 1. blobを作成（サイズ制限なし）
+    const blobR=await fetch(`${base}/git/blobs`,{
+      method:'POST', headers:hdrs,
+      body:JSON.stringify({content:jsonStr, encoding:'utf-8'})
+    });
+    if(!blobR.ok){
+      const e=await blobR.json().catch(()=>({}));
+      return {ok:false,reason:'blob作成エラー（'+blobR.status+'）：'+(e.message||'')};
+    }
+    const blobData=await blobR.json();
+    // 2. 現在のブランチ先端を取得
+    const refR=await fetch(`${base}/git/ref/heads/main`,{headers:hdrs});
+    if(!refR.ok) return {ok:false,reason:'ブランチ取得エラー（'+refR.status+'）'};
+    const refData=await refR.json();
+    const latestSha=refData.object.sha;
+    // 3. 現在のツリーSHAを取得
+    const commitR=await fetch(`${base}/git/commits/${latestSha}`,{headers:hdrs});
+    if(!commitR.ok) return {ok:false,reason:'コミット取得エラー（'+commitR.status+'）'};
+    const commitData=await commitR.json();
+    // 4. 新しいツリーを作成
+    const treeR=await fetch(`${base}/git/trees`,{
+      method:'POST', headers:hdrs,
+      body:JSON.stringify({base_tree:commitData.tree.sha, tree:[{path:GH_FILE, mode:'100644', type:'blob', sha:blobData.sha}]})
+    });
+    if(!treeR.ok) return {ok:false,reason:'ツリー作成エラー（'+treeR.status+'）'};
+    const treeData=await treeR.json();
+    // 5. 新しいコミットを作成
+    const newCommitR=await fetch(`${base}/git/commits`,{
+      method:'POST', headers:hdrs,
+      body:JSON.stringify({message:'Update data '+new Date().toISOString().slice(0,10)+' ('+sizeKB+'KB)', tree:treeData.sha, parents:[latestSha]})
+    });
+    if(!newCommitR.ok) return {ok:false,reason:'コミット作成エラー（'+newCommitR.status+'）'};
+    const newCommit=await newCommitR.json();
+    // 6. refを更新
+    const updateR=await fetch(`${base}/git/refs/heads/main`,{
+      method:'PATCH', headers:hdrs,
+      body:JSON.stringify({sha:newCommit.sha})
+    });
+    if(!updateR.ok) return {ok:false,reason:'ref更新エラー（'+updateR.status+'）'};
+    return {ok:true, sizeKB};
+  }catch(e){ return {ok:false,reason:e.message}; }
 }
 
 async function saveAndTestToken(){
@@ -731,7 +742,7 @@ async function manualSyncNow(){
   statusMsg('gh-sync-status','GitHubに同期中...','info');
   const result=await pushToGitHub(data);
   if(result.ok){
-    statusMsg('gh-sync-status','✓ 同期完了！他のデバイスでも最新データが使えます。','ok');
+    statusMsg('gh-sync-status','✓ 同期完了！（'+result.sizeKB+'KB）他のデバイスでも最新データが使えます。','ok');
   } else {
     statusMsg('gh-sync-status','同期エラー：'+result.reason,'err');
   }
